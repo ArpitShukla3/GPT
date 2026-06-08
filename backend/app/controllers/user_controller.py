@@ -25,6 +25,7 @@ from langchain.agents.middleware import TodoListMiddleware,PIIMiddleware,AgentMi
 import re
 from deepagents.middleware import FilesystemMiddleware, MemoryMiddleware, SkillsMiddleware,SummarizationMiddleware
 from deepagents.backends import StateBackend
+from deepagents import create_deep_agent
 load_dotenv()
 backend = StateBackend()
 local_llm = None
@@ -300,7 +301,7 @@ def init_workflow() -> None:
     # graph.add_edge("tools", "chat_node")
 
     # workflow = graph.compile(checkpointer=checkpointer)
-    agent = create_agent(
+    agent = create_deep_agent(
         model="openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
         tools= [build_doc, self_healing_rag, search_tool],
         checkpointer= checkpointer,
@@ -361,7 +362,6 @@ def chat(query: str, thread_id : str):
             yield chunk.content
 
 
-from langchain.agents import create_agent
 @dataclass
 class Context:
     userData : str
