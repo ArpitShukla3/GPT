@@ -1,20 +1,16 @@
 from dataclasses import dataclass
-from traceback import StackSummary
 from typing import Annotated, TypedDict
 from langgraph.checkpoint.postgres import PostgresSaver
 from dotenv import load_dotenv
-from langchain_ollama import ChatOllama
 from langchain_openrouter import ChatOpenRouter
 from langgraph.graph import END, START, StateGraph, add_messages
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessageChunk
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
 from langchain_community.tools import DuckDuckGoSearchRun
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain.tools import tool
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import requests
 import tempfile
 from langchain_postgres import PGVector
@@ -239,6 +235,80 @@ class PhoneMaskMiddleware(AgentMiddleware):
             "messages": updated_messages
         }
 
+class ConversationCondensationMiddleware(AgentMiddleware):
+    """
+    Before each model call, retains only the last 2 conversational
+    (Human / AI / Tool) messages and replaces all older ones with a
+    rolling summary injected as a SystemMessage at the top of the
+    context window. This keeps the token budget bounded while preserving
+    full conversational context through the summary.
+    """
+
+    SUMMARY_TAG = "[PRIOR CONVERSATION SUMMARY]"
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self._model = model
+
+    @property
+    def name(self) -> str:
+        return "ConversationCondensationMiddleware"
+
+    def before_model(self, state, runtime):
+        messages = state.get("messages", [])
+
+        # Separate system messages (including any existing summary) from
+        # conversational messages (Human, AI, Tool)
+        system_msgs = []
+        prior_summary = ""
+        conv_msgs = []
+
+        for m in messages:
+            if isinstance(m, SystemMessage):
+                content = m.content if isinstance(m.content, str) else ""
+                if content.startswith(self.SUMMARY_TAG):
+                    # Recover the running summary text
+                    prior_summary = content[len(self.SUMMARY_TAG):].strip()
+                else:
+                    system_msgs.append(m)
+            else:
+                conv_msgs.append(m)
+
+        # Nothing to condense yet
+        if len(conv_msgs) <= 2:
+            return None
+
+        to_summarize = conv_msgs[:-2]
+        to_keep      = conv_msgs[-2:]
+
+        # Build plaintext of messages that will be folded into the summary
+        history_text = "\n".join(
+            f"{type(m).__name__.replace('Message', '')}: "
+            f"{m.content if isinstance(m.content, str) else str(m.content)}"
+            for m in to_summarize
+        )
+
+        prompt = PromptTemplate(
+            template=(
+                "Existing summary:\n{summary}\n\n"
+                "New messages to incorporate:\n{history}\n\n"
+                "Produce a concise, updated summary that captures all key topics, "
+                "decisions, facts, and context. Be brief."
+            ),
+            input_variables=["summary", "history"],
+        )
+        response = (prompt | self._model).invoke(
+            {"summary": prior_summary, "history": history_text}
+        )
+        new_summary = response.content.strip()
+
+        # Reassemble: original system prompts + summary + last 2 conv msgs
+        summary_msg = SystemMessage(
+            content=f"{self.SUMMARY_TAG}\n{new_summary}"
+        )
+        return {"messages": system_msgs + [summary_msg] + to_keep}
+
+
 def init_workflow() -> None:
     global workflow
     global checkpointer_cm
@@ -261,7 +331,8 @@ def init_workflow() -> None:
         chunk_size=1000,
         chunk_overlap=200
     )
-    embeddings = HuggingFaceEmbeddings( model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # embeddings = HuggingFaceEmbeddings( model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     vector_store = PGVector(
         embeddings=embeddings,
         collection_name="documents",
@@ -282,43 +353,24 @@ def init_workflow() -> None:
             temperature=0.7,
         )
     
-    # model = HuggingFaceEndpoint(
-    #     repo_id="Qwen/Qwen3.6-27B",
-    #     task="text-generation",
-    #     max_new_tokens=512,
-    # )
-    # huggingFace_llm = ChatHuggingFace(llm=model, verbose=True)
     llm = cloud_llm
-
-    # tools = [search_tool,build_doc,rag_search]
-    # graph = StateGraph(MessagesState)
-
-    # graph.add_node("chat_node", chat_node)
-    # graph.add_node("tools", ToolNode(tools))
-
-    # graph.add_edge(START, "chat_node")
-    # graph.add_conditional_edges("chat_node", tools_condition)
-    # graph.add_edge("tools", "chat_node")
-
-    # workflow = graph.compile(checkpointer=checkpointer)
     agent = create_deep_agent(
         model="openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
         tools= [build_doc, self_healing_rag, search_tool],
         checkpointer= checkpointer,
-        context_schema= Context,
+        state_schema= Context,
         middleware=[
-            TodoListMiddleware(),
             PIIMiddleware("credit_card"),
             PIIMiddleware("email"),
             PIIMiddleware("ip"),
             PIIMiddleware("mac_address"),
             # FilesystemMiddleware(backend = backend),
             PhoneMaskMiddleware(),
-            # SummarizationMiddleware(model=llm, backend=backend),
+            ConversationCondensationMiddleware(llm),
             # MemoryMiddleware(backend=backend, sources=["/home/arpit/Desktop/projects/aiChat/backend/app/controllers/AGENTS.md"]),
             ModelRetryMiddleware(max_retries=3),
             ToolRetryMiddleware(max_retries=2),
-            ]
+        ],
         )
     print("Graph compiled successfully")
 
@@ -366,7 +418,6 @@ def chat(query: str, thread_id : str):
 class Context:
     userData : str
 def chatv2(query: str, thread_id : str):
-    print("hvbdfh")
     config = {
         "configurable": {
             "thread_id": thread_id
@@ -375,9 +426,6 @@ def chatv2(query: str, thread_id : str):
 
     inputs = {
         "messages": [
-            SystemMessage(content = "Limit the output to approax 100 words only"),
-            SystemMessage(content = f"If needed,prepare a short title query, then use search tool to find the related information,this tool is used only for exploration for enrenrichment of the response, prefer to use it most of times"),
-            SystemMessage(content = f"use rag tool in cases when user wants to know about the uploaded information or the conversation is sticked to the same topic, if user switches topic and its contents have never been uploaded by th euser then avoid using this tool aggressively, but if user asks then use the tool aggressively"),
             HumanMessage(content=query)
         ]
     }

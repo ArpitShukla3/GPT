@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     langchain_endpoint: str
     langchain_api_key: str
     langchain_project: str
+    google_api_key: str
+    gemini_api_key: str
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
     @property
