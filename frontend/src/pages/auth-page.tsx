@@ -288,7 +288,7 @@ function AuthPage({ mode }: AuthPageProps) {
                 <div className="h-px flex-1 bg-border" />
               </div>
 
-              {googleClientId ? (
+              {/* {googleClientId ? (
                 <div
                   ref={googleButtonRef}
                   className={cn('min-h-11', !isGoogleReady && 'animate-pulse rounded-xl bg-muted/40')}
@@ -297,7 +297,7 @@ function AuthPage({ mode }: AuthPageProps) {
                 <div className="rounded-2xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
                   Google sign-in is not configured. Set `VITE_GOOGLE_CLIENT_ID` to enable it.
                 </div>
-              )}
+              )} */}
 
               <p className="mt-6 text-sm text-muted-foreground">
                 {isSignup ? (
