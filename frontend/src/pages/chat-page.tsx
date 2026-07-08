@@ -24,7 +24,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import {
   logout,
   createUserThread,
-  deleteDocument,
+  // deleteDocument,
   fetchDocuments,
   fetchThreadMessages,
   fetchUserThreads,
@@ -48,7 +48,7 @@ function createId() {
   return crypto.randomUUID()
 }
 
-function createWelcomeMessages(threadId: string): ChatMessage[] {
+function createWelcomeMessages(): ChatMessage[] {
   return [
     {
       id: createId(),
@@ -160,7 +160,7 @@ function ChatPage() {
       setThreads(createdThreads)
       setMessagesByThread((current) => ({
         ...current,
-        [thread_id]: createWelcomeMessages(thread_id),
+        [thread_id]: createWelcomeMessages(),
       }))
       setActiveThreadId(thread_id)
       return thread_id
@@ -302,7 +302,7 @@ function ChatPage() {
     const controller = new AbortController()
     fetchDocuments(token, user.id, controller.signal)
       .then((docs) => { if (!controller.signal.aborted) setDocuments(docs) })
-      .catch(() => {})
+      .catch(() => { })
     return () => { controller.abort() }
   }, [ready, token, user])
 
@@ -320,14 +320,14 @@ function ChatPage() {
     setTaggedFileIds((prev) => prev.filter((id) => id !== fileId))
   }, [])
 
-  const handleDeleteDocument = useCallback(async (fileId: string) => {
-    if (!token || !user) return
-    try {
-      await deleteDocument(token, user.id, fileId)
-      setDocuments((prev) => prev.filter((d) => d.file_id !== fileId))
-      setTaggedFileIds((prev) => prev.filter((id) => id !== fileId))
-    } catch { /* ignore */ }
-  }, [token, user])
+  // const handleDeleteDocument = useCallback(async (fileId: string) => {
+  //   if (!token || !user) return
+  //   try {
+  //     await deleteDocument(token, user.id, fileId)
+  //     setDocuments((prev) => prev.filter((d) => d.file_id !== fileId))
+  //     setTaggedFileIds((prev) => prev.filter((id) => id !== fileId))
+  //   } catch { /* ignore */ }
+  // }, [token, user])
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value
@@ -444,7 +444,7 @@ function ChatPage() {
         allFileIds.length > 0 ? allFileIds : undefined,
       )
 
-    // Tagged file IDs are preserved — user must manually uncheck them
+      // Tagged file IDs are preserved — user must manually uncheck them
 
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`)
@@ -475,10 +475,10 @@ function ChatPage() {
             [threadId]: threadMessages.map((message) =>
               message.id === assistantMessageId
                 ? {
-                    ...message,
-                    content: streamedContent,
-                    streaming: true,
-                  }
+                  ...message,
+                  content: streamedContent,
+                  streaming: true,
+                }
                 : message,
             ),
           }
@@ -495,10 +495,10 @@ function ChatPage() {
           [threadId]: threadMessages.map((message) =>
             message.id === assistantMessageId
               ? {
-                  ...message,
-                  content: streamedContent,
-                  streaming: false,
-                }
+                ...message,
+                content: streamedContent,
+                streaming: false,
+              }
               : message,
           ),
         }
@@ -516,10 +516,10 @@ function ChatPage() {
           [threadId]: threadMessages.map((message) =>
             message.id === assistantMessageId
               ? {
-                  ...message,
-                  content: 'Sorry, the streamed response could not be loaded.',
-                  streaming: false,
-                }
+                ...message,
+                content: 'Sorry, the streamed response could not be loaded.',
+                streaming: false,
+              }
               : message,
           ),
         }
@@ -737,8 +737,8 @@ function ChatPage() {
                           {message.streaming ? (
                             <div className="mt-2 flex items-center gap-1.5">
                               <div className="size-1.5 animate-pulse rounded-full bg-primary/60" />
-                              <div className="size-1.5 animate-pulse rounded-full bg-primary/40" style={{animationDelay:'150ms'}} />
-                              <div className="size-1.5 animate-pulse rounded-full bg-primary/20" style={{animationDelay:'300ms'}} />
+                              <div className="size-1.5 animate-pulse rounded-full bg-primary/40" style={{ animationDelay: '150ms' }} />
+                              <div className="size-1.5 animate-pulse rounded-full bg-primary/20" style={{ animationDelay: '300ms' }} />
                             </div>
                           ) : null}
                         </div>
