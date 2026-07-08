@@ -6,7 +6,7 @@ import HomePage from '@/pages/home-page'
 
 function App() {
   return (
-    <div className="relative isolate min-h-dvh overflow-hidden">
+    <div className="relative isolate min-h-dvh">
       <Routes>
         <Route path="/" element={<HomePage />} />
         <Route path="/login" element={<AuthPage mode="signin" />} />

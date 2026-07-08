@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
-import { LoaderCircle, LogIn } from 'lucide-react'
+import { LoaderCircle, LogIn, TreePine } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ThemeToggle } from '@/components/theme-toggle'
 import ShootingStarsBackground from '@/components/starry-background'
-// import { cn } from '@/lib/utils'
 import { googleSignIn, login, signUp } from '@/lib/api'
 import { useAuthStore } from '@/stores/use-auth-store'
 
@@ -132,8 +131,8 @@ function AuthPage({ mode }: AuthPageProps) {
   const subtitle = useMemo(
     () =>
       isSignup
-        ? 'Create an account to save chat threads and use Google sign-in later.'
-        : 'Sign in to continue your chat history and resume saved threads.',
+        ? 'Sign up to start building your AI-powered knowledge base.'
+        : 'Sign in to continue your conversations and document analysis.',
     [isSignup],
   )
 
@@ -176,27 +175,34 @@ function AuthPage({ mode }: AuthPageProps) {
       </div>
       <main className="relative z-10 flex min-h-svh items-center justify-center bg-transparent px-4 py-12">
         <div className="relative w-full max-w-md">
-          <section className="relative overflow-hidden rounded-[2rem] border border-border/70 bg-card/95 p-6 shadow-2xl shadow-black/5 backdrop-blur sm:p-8">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.12),_transparent_35%),radial-gradient(circle_at_bottom_left,_rgba(244,114,182,0.12),_transparent_30%)]" />
-            
+          <section className="glass relative overflow-hidden rounded-3xl border border-border/50 p-6 shadow-2xl shadow-black/10 sm:p-8">
+            {/* Ambient gradient overlays */}
+            <div className="pointer-events-none absolute -top-24 -right-24 h-48 w-48 rounded-full bg-primary/20 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-20 -left-20 h-40 w-40 rounded-full bg-violet-500/15 blur-3xl" />
+
             <div className="relative z-10">
-              <div className="mb-6 text-center">
+              {/* Logo */}
+              <div className="mb-6 flex flex-col items-center gap-3">
+                <div className="rounded-2xl border border-primary/20 bg-primary/10 p-3">
+                  <TreePine className="size-6 text-primary" />
+                </div>
                 <p className="text-xs font-semibold uppercase tracking-[0.35em] text-muted-foreground">
-                  aiChat Access
+                  NexusRAG
                 </p>
-                <h1 className="mt-2 text-2xl font-semibold tracking-tight text-foreground">
+                <h1 className="text-2xl font-bold tracking-tight text-foreground">
                   {title}
                 </h1>
-                <p className="mt-2 text-sm text-muted-foreground">
+                <p className="text-center text-sm text-muted-foreground">
                   {subtitle}
                 </p>
               </div>
 
-              <div className="inline-flex w-full rounded-full border bg-background p-1 shadow-sm mb-6">
+              {/* Tab toggle */}
+              <div className="inline-flex w-full rounded-xl border border-border/60 bg-muted/40 p-1 mb-6">
                 <Button
                   variant={isSignup ? 'ghost' : 'default'}
                   size="sm"
-                  className="w-1/2 rounded-full"
+                  className="w-1/2 rounded-lg"
                   asChild
                 >
                   <Link to="/login">Sign in</Link>
@@ -204,7 +210,7 @@ function AuthPage({ mode }: AuthPageProps) {
                 <Button
                   variant={isSignup ? 'default' : 'ghost'}
                   size="sm"
-                  className="w-1/2 rounded-full"
+                  className="w-1/2 rounded-lg"
                   asChild
                 >
                   <Link to="/signup">Sign up</Link>
@@ -213,7 +219,7 @@ function AuthPage({ mode }: AuthPageProps) {
 
               <form className="space-y-4" onSubmit={handleSubmit}>
                 {isSignup ? (
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     <label className="text-sm font-medium text-foreground" htmlFor="name">
                       Name
                     </label>
@@ -223,12 +229,13 @@ function AuthPage({ mode }: AuthPageProps) {
                       value={name}
                       onChange={(event) => setName(event.target.value)}
                       autoComplete="name"
+                      className="rounded-xl"
                       required
                     />
                   </div>
                 ) : null}
 
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <label className="text-sm font-medium text-foreground" htmlFor="email">
                     Email
                   </label>
@@ -239,11 +246,12 @@ function AuthPage({ mode }: AuthPageProps) {
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
                     autoComplete="email"
+                    className="rounded-xl"
                     required
                   />
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <label className="text-sm font-medium text-foreground" htmlFor="password">
                     Password
                   </label>
@@ -254,18 +262,23 @@ function AuthPage({ mode }: AuthPageProps) {
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     autoComplete={isSignup ? 'new-password' : 'current-password'}
+                    className="rounded-xl"
                     minLength={8}
                     required
                   />
                 </div>
 
                 {error ? (
-                  <div className="rounded-2xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                  <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                     {error}
                   </div>
                 ) : null}
 
-                <Button type="submit" className="h-11 w-full rounded-xl" disabled={isSubmitting}>
+                <Button
+                  type="submit"
+                  className="h-11 w-full rounded-xl text-sm font-medium shadow-lg shadow-primary/20"
+                  disabled={isSubmitting}
+                >
                   {isSubmitting ? (
                     <>
                       <LoaderCircle className="size-4 animate-spin" />
@@ -281,32 +294,27 @@ function AuthPage({ mode }: AuthPageProps) {
               </form>
 
               <div className="my-6 flex items-center gap-3">
-                <div className="h-px flex-1 bg-border" />
+                <div className="h-px flex-1 bg-border/60" />
                 <span className="text-xs uppercase tracking-[0.35em] text-muted-foreground">
                   or
                 </span>
-                <div className="h-px flex-1 bg-border" />
+                <div className="h-px flex-1 bg-border/60" />
               </div>
 
-              {/* {googleClientId ? (
-                <div
-                  ref={googleButtonRef}
-                  className={cn('min-h-11', !isGoogleReady && 'animate-pulse rounded-xl bg-muted/40')}
-                />
-              ) : (
-                <div className="rounded-2xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
-                  Google sign-in is not configured. Set `VITE_GOOGLE_CLIENT_ID` to enable it.
-                </div>
-              )} */}
-
-              <p className="mt-6 text-sm text-muted-foreground">
+              <p className="text-center text-sm text-muted-foreground">
                 {isSignup ? (
                   <>
-                    Already have an account? <Link className="text-foreground underline" to="/login">Sign in</Link>
+                    Already have an account?{' '}
+                    <Link className="font-medium text-primary hover:underline" to="/login">
+                      Sign in
+                    </Link>
                   </>
                 ) : (
                   <>
-                    Need an account? <Link className="text-foreground underline" to="/signup">Sign up</Link>
+                    Need an account?{' '}
+                    <Link className="font-medium text-primary hover:underline" to="/signup">
+                      Sign up
+                    </Link>
                   </>
                 )}
               </p>

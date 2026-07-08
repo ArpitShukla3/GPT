@@ -1,7 +1,7 @@
 import axios from 'axios'
 
-// const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://gpt-6qge.onrender.com/api'
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://gpt-6qge.onrender.com/api'
+// const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
 
 export type AuthUser = {
   id: number
@@ -44,6 +44,14 @@ export type CreatedThreadResponse = {
   thread_id: string
   thread_ids: string[]
   threads: ThreadSummary[]
+}
+
+export type DocumentInfo = {
+  id: number
+  file_id: string
+  filename: string
+  chunk_count: number
+  created_at: string | null
 }
 
 type CredentialsPayload = {
@@ -183,6 +191,7 @@ export async function streamChat(
   threadId: string,
   userId: number,
   signal?: AbortSignal,
+  fileIds?: string[],
 ) {
   return fetch(`${API_BASE_URL}/users/chat`, {
     method: 'POST',
@@ -194,9 +203,61 @@ export async function streamChat(
       query,
       user_id: userId,
       thread_id: threadId,
+      file_ids: fileIds ?? [],
     }),
     signal,
   })
+}
+
+export async function uploadDocuments(
+  token: string,
+  userId: number,
+  files: File[],
+  signal?: AbortSignal,
+): Promise<DocumentInfo[]> {
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append('files', file)
+  }
+
+  const response = await fetch(`${API_BASE_URL}/users/${userId}/documents`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: formData,
+    signal,
+  })
+
+  return parseJsonResponse<DocumentInfo[]>(response)
+}
+
+export async function fetchDocuments(
+  token: string,
+  userId: number,
+  signal?: AbortSignal,
+): Promise<DocumentInfo[]> {
+  const response = await fetch(`${API_BASE_URL}/users/${userId}/documents`, {
+    headers: authHeaders(token),
+    signal,
+  })
+
+  return parseJsonResponse<DocumentInfo[]>(response)
+}
+
+export async function deleteDocument(
+  token: string,
+  userId: number,
+  fileId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/users/${userId}/documents/${fileId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+    signal,
+  })
+
+  if (!response.ok && response.status !== 204) {
+    throw new Error(`Failed to delete document: ${response.status}`)
+  }
 }
 
 export async function fetchThreadMessages(

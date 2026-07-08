@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { LogOut, MessageSquarePlus, PanelLeft } from 'lucide-react'
+import { Bot, FileText, Loader2, LogOut, MessageSquarePlus, Paperclip, PanelLeft, Send, TreePine, X } from 'lucide-react'
 import { Navigate, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -24,9 +24,13 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import {
   logout,
   createUserThread,
+  deleteDocument,
+  fetchDocuments,
   fetchThreadMessages,
   fetchUserThreads,
   streamChat,
+  uploadDocuments,
+  type DocumentInfo,
   type ThreadMessage,
   type ThreadSummary,
 } from '@/lib/api'
@@ -49,7 +53,7 @@ function createWelcomeMessages(threadId: string): ChatMessage[] {
     {
       id: createId(),
       role: 'assistant',
-      content: `Thread \`${threadId}\` is ready. Send a message and I will keep streaming in this conversation.`,
+      content: `Welcome! This thread is ready. Upload a PDF with 📎, mention it with **@filename**, and ask anything.`,
     },
   ]
 }
@@ -109,11 +113,21 @@ function ChatPage() {
   const [isCreatingThread, setIsCreatingThread] = useState(false)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const token = useAuthStore((state) => state.token)
   const user = useAuthStore((state) => state.user)
   const ready = useAuthStore((state) => state.ready)
   const clearSession = useAuthStore((state) => state.clearSession)
   const hydrateFromStorage = useAuthStore((state) => state.hydrateFromStorage)
+
+  // Document / file state
+  const [documents, setDocuments] = useState<DocumentInfo[]>([])
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [taggedFileIds, setTaggedFileIds] = useState<string[]>([])
+  const [isUploading, setIsUploading] = useState(false)
+  const [showMentionDropdown, setShowMentionDropdown] = useState(false)
+  const [mentionFilter, setMentionFilter] = useState('')
 
   useEffect(() => {
     if (!ready) {
@@ -282,6 +296,76 @@ function ChatPage() {
     }
   }, [activeThreadId, messagesByThread, ready, token, user])
 
+  // Load user's documents on mount
+  useEffect(() => {
+    if (!ready || !token || !user) return
+    const controller = new AbortController()
+    fetchDocuments(token, user.id, controller.signal)
+      .then((docs) => { if (!controller.signal.aborted) setDocuments(docs) })
+      .catch(() => {})
+    return () => { controller.abort() }
+  }, [ready, token, user])
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    if (files.length > 0) setPendingFiles((prev) => [...prev, ...files])
+    e.target.value = ''
+  }, [])
+
+  const removePendingFile = useCallback((index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index))
+  }, [])
+
+  const removeTaggedFile = useCallback((fileId: string) => {
+    setTaggedFileIds((prev) => prev.filter((id) => id !== fileId))
+  }, [])
+
+  const handleDeleteDocument = useCallback(async (fileId: string) => {
+    if (!token || !user) return
+    try {
+      await deleteDocument(token, user.id, fileId)
+      setDocuments((prev) => prev.filter((d) => d.file_id !== fileId))
+      setTaggedFileIds((prev) => prev.filter((id) => id !== fileId))
+    } catch { /* ignore */ }
+  }, [token, user])
+
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value
+    setInput(value)
+
+    // Detect @ mention
+    const cursorPos = e.target.selectionStart ?? value.length
+    const textBeforeCursor = value.slice(0, cursorPos)
+    const atMatch = textBeforeCursor.match(/@(\S*)$/)
+
+    if (atMatch) {
+      setShowMentionDropdown(true)
+      setMentionFilter(atMatch[1].toLowerCase())
+    } else {
+      setShowMentionDropdown(false)
+      setMentionFilter('')
+    }
+  }, [])
+
+  const insertMention = useCallback((doc: DocumentInfo) => {
+    const cursorPos = textareaRef.current?.selectionStart ?? input.length
+    const textBeforeCursor = input.slice(0, cursorPos)
+    const atIndex = textBeforeCursor.lastIndexOf('@')
+    const before = input.slice(0, atIndex)
+    const after = input.slice(cursorPos)
+    setInput(`${before}@${doc.filename} ${after}`)
+    if (!taggedFileIds.includes(doc.file_id)) {
+      setTaggedFileIds((prev) => [...prev, doc.file_id])
+    }
+    setShowMentionDropdown(false)
+    setMentionFilter('')
+    textareaRef.current?.focus()
+  }, [input, taggedFileIds])
+
+  const filteredMentionDocs = documents.filter(
+    (d) => d.filename.toLowerCase().includes(mentionFilter) && !taggedFileIds.includes(d.file_id),
+  )
+
   const sendRequest = async () => {
     const userQuery = input.trim()
 
@@ -332,6 +416,23 @@ function ChatPage() {
     })
 
     setInput('')
+    setShowMentionDropdown(false)
+
+    // Upload any pending files first
+    let allFileIds = [...taggedFileIds]
+    if (pendingFiles.length > 0) {
+      setIsUploading(true)
+      try {
+        const uploaded = await uploadDocuments(token, user.id, pendingFiles, controller.signal)
+        setDocuments((prev) => [...uploaded, ...prev])
+        allFileIds = [...allFileIds, ...uploaded.map((d) => d.file_id)]
+      } catch {
+        // If upload fails, still send the message without the files
+      } finally {
+        setPendingFiles([])
+        setIsUploading(false)
+      }
+    }
 
     try {
       const response = await streamChat(
@@ -340,7 +441,10 @@ function ChatPage() {
         threadId,
         user.id,
         controller.signal,
+        allFileIds.length > 0 ? allFileIds : undefined,
       )
+
+    // Tagged file IDs are preserved — user must manually uncheck them
 
       if (!response.ok) {
         throw new Error(`Request failed with status ${response.status}`)
@@ -469,20 +573,21 @@ function ChatPage() {
 
   return (
     <SidebarProvider>
-      <main className="relative h-dvh overflow-hidden bg-slate-50/50 dark:bg-slate-950 bg-gradient-to-br from-indigo-50/10 via-sky-50/5 to-emerald-50/10 dark:from-slate-950 dark:via-indigo-950/20 dark:to-slate-900">
-        <div className="absolute inset-0 z-0 bg-[radial-gradient(circle_at_0%_0%,rgba(99,102,241,0.08),transparent_40%),radial-gradient(circle_at_100%_100%,rgba(244,63,94,0.06),transparent_40%)] dark:bg-[radial-gradient(circle_at_0%_0%,rgba(99,102,241,0.15),transparent_40%),radial-gradient(circle_at_100%_100%,rgba(244,63,94,0.12),transparent_40%)] pointer-events-none" />
+      <main className="relative h-dvh overflow-hidden bg-background">
+        <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(ellipse_at_top_left,oklch(0.55_0.22_265/0.08),transparent_50%),radial-gradient(ellipse_at_bottom_right,oklch(0.6_0.2_330/0.06),transparent_50%)] dark:bg-[radial-gradient(ellipse_at_top_left,oklch(0.55_0.22_265/0.12),transparent_50%),radial-gradient(ellipse_at_bottom_right,oklch(0.6_0.2_330/0.1),transparent_50%)]" />
         <div className="relative z-10 flex h-full min-h-0 flex-col lg:flex-row">
-          <Sidebar className="border-b border-border/70 bg-sidebar/95 backdrop-blur lg:border-b-0">
+          <Sidebar className="border-b border-border/50 bg-sidebar/90 backdrop-blur-xl lg:border-b-0">
             <SidebarContent className="p-0">
-              <div className="border-b border-sidebar-border p-4">
+              <div className="border-b border-sidebar-border/60 p-4">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-medium uppercase tracking-[0.35em] text-sidebar-foreground/60">
-                      Conversations
-                    </p>
-                    <h1 className="mt-2 text-lg font-semibold tracking-tight text-sidebar-foreground">
-                      Thread history
-                    </h1>
+                  <div className="flex items-center gap-2.5">
+                    <div className="rounded-lg border border-primary/20 bg-primary/10 p-1.5">
+                      <TreePine className="size-4 text-primary" />
+                    </div>
+                    <div>
+                      <h1 className="text-sm font-bold tracking-tight text-sidebar-foreground">NexusRAG</h1>
+                      <p className="text-[10px] text-sidebar-foreground/50">Conversations</p>
+                    </div>
                   </div>
                   <SidebarTrigger />
                 </div>
@@ -566,37 +671,24 @@ function ChatPage() {
           </Sidebar>
 
           <SidebarInset className="flex min-h-0 flex-1 flex-col">
-            <header className="shrink-0 border-b border-border/70 bg-card/80 px-4 py-4 shadow-sm shadow-black/5 backdrop-blur sm:px-6">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+            <header className="glass shrink-0 border-b border-border/40 px-4 py-3 sm:px-6">
+              <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <SidebarTrigger />
                   <div>
-                    <p className="text-xs font-medium uppercase tracking-[0.35em] text-muted-foreground">
-                      Chat route
-                    </p>
-                    <h2 className="mt-1 text-xl font-semibold tracking-tight text-foreground">
+                    <h2 className="text-sm font-semibold tracking-tight text-foreground">
                       {activeThreadId
-                        ? `Thread ${activeThreadId.slice(0, 8)}…`
+                        ? threads.find(t => t.thread_id === activeThreadId)?.title?.trim() || `Thread ${activeThreadId.slice(0, 6)}…`
                         : 'No thread selected'}
                     </h2>
+                    <p className="text-[11px] text-muted-foreground">{user?.email}</p>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-3">
-                  {activeThreadId ? (
-                    <div className="rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground">
-                      {activeThreadId}
-                    </div>
-                  ) : null}
-                  <div className="hidden rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground sm:block">
-                    {user?.email}
-                  </div>
-                  <ThemeToggle />
-                </div>
+                <ThemeToggle />
               </div>
             </header>
 
-            <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-t-3xl border-t border-border/70 bg-card/90 shadow-2xl shadow-black/5 backdrop-blur">
+            <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-card/50 backdrop-blur-sm">
               <ScrollArea viewportRef={viewportRef} className="min-h-0 flex-1">
                 <div className="space-y-4 p-5 sm:p-6">
                   {activeThreadId && activeThreadMessages === undefined ? (
@@ -613,60 +705,202 @@ function ChatPage() {
                     <div
                       key={message.id}
                       className={cn(
-                        'flex',
+                        'flex animate-message-in',
                         message.role === 'user' ? 'justify-end' : 'justify-start',
                       )}
                     >
-                      <div
-                        className={cn(
-                          'max-w-[min(46rem,92%)] rounded-2xl border px-4 py-3 shadow-sm',
-                          message.role === 'user'
-                            ? 'border-primary/20 bg-primary text-primary-foreground'
-                            : 'border-border bg-background',
-                        )}
-                      >
-                        {message.role === 'assistant' ? (
-                          <div className="prose prose-sm max-w-none prose-p:my-3 prose-ul:my-3 prose-ol:my-3 prose-headings:mb-2 prose-headings:mt-4 prose-quote:my-3 dark:prose-invert">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {message.content}
-                            </ReactMarkdown>
+                      <div className={cn('flex max-w-[min(44rem,90%)] gap-3', message.role === 'user' && 'flex-row-reverse')}>
+                        {message.role === 'assistant' && (
+                          <div className="mt-1 shrink-0 rounded-xl border border-primary/20 bg-primary/10 p-1.5 h-fit">
+                            <Bot className="size-4 text-primary" />
                           </div>
-                        ) : (
-                          <p className="whitespace-pre-wrap text-sm leading-6">
-                            {message.content}
-                          </p>
                         )}
-                        {message.streaming ? (
-                          <p className="mt-2 text-xs text-muted-foreground">
-                            streaming...
-                          </p>
-                        ) : null}
+                        <div
+                          className={cn(
+                            'rounded-2xl px-4 py-3',
+                            message.role === 'user'
+                              ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/15'
+                              : 'border border-border/60 bg-background/80 backdrop-blur-sm',
+                          )}
+                        >
+                          {message.role === 'assistant' ? (
+                            <div className="prose prose-sm max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-headings:mb-2 prose-headings:mt-3 dark:prose-invert">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {message.content}
+                              </ReactMarkdown>
+                            </div>
+                          ) : (
+                            <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                              {message.content}
+                            </p>
+                          )}
+                          {message.streaming ? (
+                            <div className="mt-2 flex items-center gap-1.5">
+                              <div className="size-1.5 animate-pulse rounded-full bg-primary/60" />
+                              <div className="size-1.5 animate-pulse rounded-full bg-primary/40" style={{animationDelay:'150ms'}} />
+                              <div className="size-1.5 animate-pulse rounded-full bg-primary/20" style={{animationDelay:'300ms'}} />
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               </ScrollArea>
 
-              <div className="shrink-0 border-t border-border/70 bg-background/80 p-4 sm:p-5">
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <textarea
-                    className="min-h-24 flex-1 resize-none rounded-2xl border border-input bg-background px-4 py-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' && !event.shiftKey) {
-                        event.preventDefault()
-                        sendRequest()
-                      }
-                    }}
-                    placeholder="Ask something and press Enter to send..."
-                  />
-                  <Button className="sm:self-end" onClick={sendRequest}>
-                    Send
-                  </Button>
+              <div className="glass shrink-0 border-t border-border/40 p-4 sm:p-5">
+                {/* Tagged files chips */}
+                {taggedFileIds.length > 0 && (
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {taggedFileIds.map((fileId) => {
+                      const doc = documents.find((d) => d.file_id === fileId)
+                      return (
+                        <span
+                          key={fileId}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300"
+                        >
+                          <FileText className="size-3" />
+                          {doc?.filename ?? fileId.slice(0, 8)}
+                          <button
+                            type="button"
+                            onClick={() => removeTaggedFile(fileId)}
+                            className="ml-0.5 rounded-full p-0.5 transition-colors hover:bg-indigo-200 dark:hover:bg-indigo-500/20"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        </span>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Pending file uploads chips */}
+                {pendingFiles.length > 0 && (
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {pendingFiles.map((file, index) => (
+                      <span
+                        key={`${file.name}-${index}`}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium',
+                          isUploading
+                            ? 'animate-pulse border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300'
+                            : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
+                        )}
+                      >
+                        {isUploading ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <Paperclip className="size-3" />
+                        )}
+                        {file.name}
+                        {!isUploading && (
+                          <button
+                            type="button"
+                            onClick={() => removePendingFile(index)}
+                            className="ml-0.5 rounded-full p-0.5 transition-colors hover:bg-emerald-200 dark:hover:bg-emerald-500/20"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="relative">
+                  {/* @-mention dropdown */}
+                  {showMentionDropdown && filteredMentionDocs.length > 0 && (
+                    <div className="absolute bottom-full left-0 z-50 mb-2 w-72 max-h-48 overflow-y-auto rounded-xl border border-border/70 bg-background/95 shadow-xl backdrop-blur-xl">
+                      <div className="p-1.5">
+                        <p className="px-2.5 py-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                          Mention a document
+                        </p>
+                        {filteredMentionDocs.map((doc) => (
+                          <button
+                            key={doc.file_id}
+                            type="button"
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors hover:bg-accent"
+                            onMouseDown={(e) => {
+                              e.preventDefault()
+                              insertMention(doc)
+                            }}
+                          >
+                            <FileText className="size-4 shrink-0 text-indigo-500" />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate font-medium">{doc.filename}</p>
+                              <p className="text-[10px] text-muted-foreground">
+                                {doc.chunk_count} chunks
+                              </p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {showMentionDropdown && filteredMentionDocs.length === 0 && documents.length === 0 && (
+                    <div className="absolute bottom-full left-0 z-50 mb-2 w-72 rounded-xl border border-border/70 bg-background/95 p-4 text-center text-xs text-muted-foreground shadow-xl backdrop-blur-xl">
+                      No documents uploaded yet. Use the 📎 button to upload PDFs first.
+                    </div>
+                  )}
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <div className="relative min-h-24 flex-1">
+                      <textarea
+                        ref={textareaRef}
+                        className="min-h-24 w-full resize-none rounded-2xl border border-input bg-background py-3 pl-12 pr-4 text-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]"
+                        value={input}
+                        onChange={handleInputChange}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && !event.shiftKey) {
+                            event.preventDefault()
+                            sendRequest()
+                          }
+                          if (event.key === 'Escape' && showMentionDropdown) {
+                            setShowMentionDropdown(false)
+                          }
+                        }}
+                        onBlur={() => {
+                          // Delay hiding so click on dropdown item works
+                          setTimeout(() => setShowMentionDropdown(false), 200)
+                        }}
+                        placeholder="Ask something… Type @ to mention a document"
+                      />
+                      {/* Paperclip button */}
+                      <button
+                        type="button"
+                        className="absolute left-3 top-3 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        onClick={() => fileInputRef.current?.click()}
+                        title="Attach PDF files"
+                      >
+                        <Paperclip className="size-4" />
+                      </button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileSelect}
+                      />
+                    </div>
+                    <Button className="h-12 rounded-2xl px-5 shadow-lg shadow-primary/20 sm:self-end" onClick={sendRequest} disabled={isUploading}>
+                      {isUploading ? (
+                        <>
+                          <Loader2 className="size-4 animate-spin" />
+                          Building tree…
+                        </>
+                      ) : (
+                        <>
+                          <Send className="size-4" />
+                          Send
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Enter sends. Shift+Enter inserts a new line.
+                  Enter sends · Shift+Enter new line · @ to mention a file · 📎 to attach PDFs
                 </p>
               </div>
             </section>
