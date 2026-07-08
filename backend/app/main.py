@@ -9,9 +9,13 @@ from app.db.base import Base
 from app.db.session import engine
 import app.models.auth_session as _auth_session_model  # noqa: F401
 from app.models.chat_message import ChatMessage  # noqa: F401
+from app.models.document import Document  # noqa: F401
+from app.models.tree_node import TreeNode  # noqa: F401
 from app.routes.auth_routes import router as auth_router
+from app.routes.document_routes import router as document_router
 from app.routes.health_routes import router as health_router
 from app.routes.user_routes import router as user_router
+from app.routes.cart_routes import router as cart_router
 
 try:
     from app.controllers.user_controller import close_workflow, init_workflow
@@ -95,6 +99,8 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router, prefix="/api")
     app.include_router(user_router, prefix="/api")
+    app.include_router(document_router, prefix="/api")
+    app.include_router(cart_router)
 
     return app
 

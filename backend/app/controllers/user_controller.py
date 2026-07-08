@@ -1,3 +1,5 @@
+from langchain_ollama import OllamaEmbeddings
+from langchain_ollama import ChatOllama
 from dataclasses import dataclass
 from typing import Annotated, TypedDict
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -22,6 +24,7 @@ import re
 from deepagents.middleware import FilesystemMiddleware, MemoryMiddleware, SkillsMiddleware,SummarizationMiddleware
 from deepagents.backends import StateBackend
 from deepagents import create_deep_agent
+from langchain_huggingface import HuggingFaceEmbeddings
 load_dotenv()
 backend = StateBackend()
 local_llm = None
@@ -40,6 +43,8 @@ workflow = None
 search_tool = None
 agent =  None
 final_llm = None
+lightweight_llm = None
+tree_vector_store = None
 
 class MessagesState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
@@ -317,45 +322,84 @@ def init_workflow() -> None:
     global cloud_llm 
     global model
     global huggingFace_llm
-    global workflow
     global splitter
     global embeddings
     global vector_store
     global retriever
     global llm 
-    global check
     global search_tool
     global agent
+    global lightweight_llm
+    global tree_vector_store
     search_tool = DuckDuckGoSearchRun()
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200
     )
-    # embeddings = HuggingFaceEmbeddings( model_name="sentence-transformers/all-MiniLM-L6-v2")
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    embeddingProvider = os.getenv("EMBEDDING_PROVIDER")
+    if(embeddingProvider == "huggingface"):
+        embeddings = HuggingFaceEmbeddings( model_name="sentence-transformers/all-MiniLM-L6-v2")
+    elif(embeddingProvider == "ollama"):
+        embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    elif(embeddingProvider == "gemini"):
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    else:
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     vector_store = PGVector(
         embeddings=embeddings,
         collection_name="documents",
+        connection=os.environ["PGVECTOR_URI"],
+    )
+    tree_vector_store = PGVector(
+        embeddings=embeddings,
+        collection_name="tree_nodes",
         connection=os.environ["PGVECTOR_URI"],
     )
     retriever = vector_store.as_retriever(
         search_kwargs={"k": 5}
     )
 
-    checkpointer_cm = PostgresSaver.from_conn_string(os.environ["POSTGRES_URI"])
-    checkpointer = checkpointer_cm.__enter__()
-    checkpointer.setup()
-    # checkpointer = InMemorySaver()
+    checkpointer_provider = os.getenv("CHECKPOINTER_PROVIDER")
+    if(checkpointer_provider == "postgres"):
+        checkpointer_cm = PostgresSaver.from_conn_string(os.environ["POSTGRES_URI"])
+        checkpointer = checkpointer_cm.__enter__()
+        checkpointer.setup()
+    elif(checkpointer_provider == "inmemory"):
+        checkpointer = InMemorySaver()
+    else:
+        checkpointer = InMemorySaver()
 
-    # local_llm = ChatOllama(model = "granite4.1:3b",  num_predict=200)
-    cloud_llm = ChatOpenRouter(
-            model="nvidia/nemotron-3-ultra-550b-a55b:free",
+    llmProvider = os.getenv("LLM_PROVIDER")
+    if(llmProvider == "ollama"):
+        llm = ChatOllama(model = "granite4.1:3b",  num_predict=200    )
+    # elif(llmProvider == "gemini"):
+        # llm = ChatGemini(model = "gemini-1.5-flash",  num_predict=200)
+    # elif(llmProvider == "huggingface"):
+    #     llm = HuggingFacePipeline(
+    #         pipeline=pipeline,
+    #         model_kwargs={"temperature": 0.7, "max_new_tokens": 500}
+    #     )
+    elif(llmProvider == "openrouter"):
+        llm = ChatOpenRouter(
+            model="qwen/qwen3-coder:free",
             temperature=0.7,
         )
+    else:
+        llm = ChatOllama(model = "granite4.1:3b",  num_predict=200    )
+
+    # Lightweight LLM for tree building & compression
+    if llmProvider == "ollama":
+        lightweight_llm = ChatOllama(model="gemma3:1b")
+    elif llmProvider == "openrouter":
+        lightweight_llm = ChatOpenRouter(
+            model="google/gemma-3-1b-it:free",
+            temperature=0.3,
+        )
+    else:
+        lightweight_llm = ChatOllama(model="gemma3:1b")
     
-    llm = cloud_llm
     agent = create_deep_agent(
-        model="openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
+        model=llm,
         tools= [build_doc, self_healing_rag, search_tool],
         checkpointer= checkpointer,
         state_schema= Context,
@@ -414,31 +458,101 @@ def chat(query: str, thread_id : str):
             yield chunk.content
 
 
+def file_scoped_rag(query: str, file_ids: list[str], k: int = 10) -> str:
+    """
+    Retrieve document chunks that belong to specific files only.
+    Uses PGVector metadata filtering on file_id.
+    """
+    if not file_ids:
+        return ""
+
+    all_chunks: list[str] = []
+    for file_id in file_ids:
+        docs = vector_store.similarity_search(
+            query=query,
+            k=k,
+            filter={"file_id": file_id},
+        )
+        all_chunks.extend(doc.page_content for doc in docs)
+
+    if not all_chunks:
+        return "No relevant information found in the tagged documents."
+
+    return "\n\n".join(all_chunks)
+
+
 @dataclass
 class Context:
     userData : str
-def chatv2(query: str, thread_id : str):
+def chatv2(query: str, thread_id: str, file_ids: list[str] | None = None, db = None):
     config = {
         "configurable": {
             "thread_id": thread_id
         }
     }
 
-    inputs = {
-        "messages": [
-            HumanMessage(content=query)
-        ]
-    }
+    # If the user tagged specific files, check for hierarchical tree first
+    if file_ids and db is not None:
+        from app.controllers.hierarchical_rag import has_tree, hierarchical_rag_query
+        if has_tree(file_ids, db):
+            yield from hierarchical_rag_query(
+                query=query,
+                file_ids=file_ids,
+                db=db,
+                primary_llm=llm,
+                lightweight_llm=lightweight_llm,
+                emb_model=embeddings,
+                tree_vs=tree_vector_store,
+            )
+            return
 
+    # Fallback: flat PGVector retrieval for legacy files
+    messages: list = []
+    if file_ids:
+        context = file_scoped_rag(query, file_ids)
+        if context:
+            messages.append(SystemMessage(
+                content=(
+                    "The user has referenced specific uploaded documents. "
+                    "Use the following document context to answer their question:\n\n"
+                    f"{context}"
+                )
+            ))
+
+    messages.append(HumanMessage(content=query))
+
+    inputs = {
+        "messages": messages
+    }
+    if(os.getenv("APP_ENV") == "development"):
+        for message in messages:
+            print(message)
     generator = agent.stream(inputs, config=config, stream_mode="messages")
 
-    for chunk,metadata in generator:
-        if isinstance(chunk, AIMessageChunk):
-            if chunk.tool_calls:
-                yield "Calling tools"
+    inside_think = False
 
-            elif chunk.content:
-                yield chunk.content
+    for chunk, metadata in generator:
+        if not isinstance(chunk, AIMessageChunk):
+            continue
+
+        if chunk.tool_calls:
+            yield "Calling tools"
+            continue
+
+        text = chunk.content or ""
+
+        if "<think>" in text:
+            inside_think = True
+            continue
+
+        if "</think>" in text:
+            inside_think = False
+            continue
+
+        if not inside_think:
+            yield text
+        else:
+            print(text,end="",flush=True)
 
 
 def generate_thread_title(first_message: str) -> str:

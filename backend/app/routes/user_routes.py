@@ -36,6 +36,7 @@ class ChatRequest(BaseModel):
     query: str
     user_id: int
     thread_id: str
+    file_ids: list[str] = []
 
 
 def ensure_user_access(user_id: int, current_user: User) -> None:
@@ -109,7 +110,7 @@ def reply(
         completed = False
 
         try:
-            for chunk in chatv2(query_str, thread_id):
+            for chunk in chatv2(query_str, thread_id, file_ids=payload.file_ids, db=db):
                 assistant_chunks.append(chunk)
                 yield chunk
             completed = True

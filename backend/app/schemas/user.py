@@ -55,3 +55,13 @@ class ThreadMessageRead(BaseModel):
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class DocumentRead(BaseModel):
+    id: int
+    file_id: str
+    filename: str
+    chunk_count: int
+    created_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
